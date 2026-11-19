@@ -47,7 +47,7 @@ endpoint.
 ## Quick start (install / patch in place)
 
 ```sh
-cd ~/git/qobuz-mods
+cd ~/off-work/qobuz-mods
 ./install.sh
 open "/Applications/Qobuz.app"
 ```
@@ -75,7 +75,7 @@ If `/Applications/Qobuz.app` is not writable by your user, the CLI tells you the
 ## Development (scratch copy)
 
 ```sh
-cd ~/git/qobuz-mods
+cd ~/off-work/qobuz-mods
 ./scripts/build-native.sh
 node bin/qobuz-mod.js patch --dev --app ".scratch/Qobuz Dev.app"
 open ".scratch/Qobuz Dev.app"
@@ -297,3 +297,7 @@ The smoke test uses a fake Electron main process, a temporary config dir, and th
 it checks preload installation, renderer sources, track/progress events, mod listing, mod
 toggling, doctor output, and log writes. It never launches Qobuz or reads the real Qobuz
 profile.
+
+## Author
+
+Built and maintained by [Jupitarrr](https://github.com/jupitaaar) (`308037480+jupitarrr@users.noreply.github.com`).

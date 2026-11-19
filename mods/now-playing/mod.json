@@ -3,7 +3,7 @@
   "name": "Now Playing",
   "version": "0.1.0",
   "description": "Publishes track metadata and playback state to macOS Now Playing / Control Center and handles media keys through MPRemoteCommandCenter.",
-  "author": "qobuz-mods",
+  "author": "Jupitarrr",
   "main": "main.js",
   "bundled": true,
   "platforms": ["darwin"],
