@@ -11,8 +11,8 @@ claimed as supported** until tested.
 
 ## What works today
 
-- **In-place patcher**: backs up the main JS, injects one require line, and ad-hoc re-signs
-  `/Applications/Qobuz.app`. `./uninstall.sh` restores the original and re-signs.
+- **In-place patcher**: backs up the main JS, injects one require line, and leaves the app's
+  original code signature intact. `./uninstall.sh` restores the original file.
 - Runtime loader with config, logging, per-mod error isolation, dependency ordering, and a
   narrow IPC bridge.
 - In-app **Mods** panel: opened from a **Mods** item between Settings and Log out in the
@@ -56,8 +56,11 @@ Quit Qobuz first. The installer:
 1. builds the native Now Playing addon if needed;
 2. installs `runtime/` and first-party mods into
    `~/Library/Application Support/QobuzMods/`;
-3. backs up `main-darwin.js` and injects the loader into `/Applications/Qobuz.app`;
-4. ad-hoc re-signs the app with its original entitlements.
+3. backs up `main-darwin.js` and injects the loader into `/Applications/Qobuz.app`.
+
+The patched app keeps its original Developer ID signature. Only a resource inside the bundle
+changes; macOS does not re-check the bundle seal when launching a non-quarantined app, so no
+re-signing is needed. See [Signing / Gatekeeper](#signing--gatekeeper).
 
 To undo:
 
@@ -65,8 +68,8 @@ To undo:
 ./uninstall.sh
 ```
 
-This restores `main-darwin.js` from the backup and re-signs the app. Config, logs, and mods
-under `QobuzMods/` are kept; delete that directory to remove user data.
+This restores `main-darwin.js` from the backup (and removes the backup file). Config, logs,
+and mods under `QobuzMods/` are kept; delete that directory to remove user data.
 
 If `/Applications/Qobuz.app` is not writable by your user, the CLI tells you the exact
 `sudo chown` command. It never runs sudo for you.
@@ -104,9 +107,10 @@ qobuz-mod build-native
 - `--refresh` re-copies a non-in-place target from the source, then patches.
 - `--dev` uses the repo runtime/mods and requires a scratch `--app` path.
 - `--force` allows edge-case patches and overwrites bundled/user mods on install.
-- `--no-sign` skips codesign; `--no-native` skips the addon build.
+- `--sign` re-signs the app ad-hoc after patching (not recommended; see below);
+  `--no-native` skips the addon build.
 
-`doctor` reports app/Electron versions, paths, injection and backup state, codesign status,
+`doctor` reports app/Electron versions, paths, injection and backup state, signature status,
 config, mods, running processes, and recent log errors.
 
 ## How it works
@@ -166,7 +170,7 @@ item if React remounts the user menu.
 
 ```
 bin/qobuz-mod.js            CLI: patch / restore / update / doctor / list / build-native
-src/patcher/                paths, backup, injection, plist, codesign, runtime install
+src/patcher/                paths, backup, injection, plist, signature checks, runtime install
 runtime/loader.js           injected main-process loader + player bridge + IPC
 runtime/renderer.js         renderer preload (bridge + renderer mod eval)
 mods/now-playing/           macOS MPNowPlayingInfoCenter addon + main mod
@@ -246,25 +250,50 @@ overwritten unless `--force` is passed. Retired first-party mods are removed on 
 
 ## Signing / Gatekeeper
 
-Modifying `main-darwin.js` invalidates the app signature. The patcher extracts the app's
-entitlements and re-signs it in place ad-hoc with hardened runtime:
+Patching only touches resources: it rewrites `Contents/Resources/app/main-darwin.js` and drops
+`main-darwin.js.qobuzmod-backup` next to it. The Mach-O executable, frameworks, and helper apps
+are untouched. `codesign --verify` therefore reports a modified sealed resource, but macOS does
+**not** re-validate the bundle seal when launching a non-quarantined app. The patched app starts
+normally with its **original Developer ID signature** and everything that depends on it:
 
-```sh
-codesign --force --deep --options runtime --entitlements <original> --sign - "/Applications/Qobuz.app"
-```
+- the Developer ID designated requirement (`anchor apple generic …`), which is what Squirrel
+  derives its update validator from — instead of an ad-hoc `cdhash H"…"` requirement;
+- the notarization ticket and the CDHash, so Gatekeeper approval caches, LaunchServices, and
+  TCC/Privacy grants keyed to the app identity still match;
+- untouched framework/helper signatures.
 
-If macOS quarantines the app, run:
+So the patcher does **not** re-sign by default. `--sign` restores the old behaviour (extract
+entitlements and `codesign --force --deep --options runtime --sign -`). It is only useful if a
+future Qobuz build starts validating its own signature at launch. Ad-hoc signing replaces the
+Developer ID identity with a local cdhash, invalidates the notarization ticket, and does not
+satisfy Gatekeeper either.
+
+`doctor` reflects this: it verifies the **executable's** signature (`codesign --verify
+--ignore-resources`) and reports the bundle seal as “modified by the loader injection
+(expected)”. Note that you need `--sign` (or a reinstall of Qobuz) to recover a seal that was
+broken by an older, ad-hoc-signed patch.
+
+The one thing that matters is quarantine. A quarantined app with a modified seal is blocked by
+Gatekeeper, and ad-hoc signing does not change that. The patcher strips
+`com.apple.quarantine` before patching (and when copying an app); if you still see the warning,
+run:
 
 ```sh
 xattr -dr com.apple.quarantine "/Applications/Qobuz.app"
 ```
 
-The patched app's Squirrel auto-updater may not install updates because the app is re-signed
-ad-hoc. Update manually:
+### Updates
+
+Squirrel compares the downloaded update against the requirement of the running app. With the
+original signature left in place that requirement is still Qobuz's Developer ID, so auto-update
+has the best chance of working (it replaces the patched JS; re-apply the patch afterwards).
+With `--sign` the app's requirement is a cdhash, and Squirrel will reject genuine updates.
+
+Auto-update is not guaranteed in either mode. The supported flow is:
 
 1. quit Qobuz;
 2. run `./uninstall.sh` to restore the original main JS;
-3. launch Qobuz and let it update (or reinstall Qobuz);
+3. launch Qobuz and let it update (or reinstall Qobuz from the DMG);
 4. quit Qobuz;
 5. run `./install.sh` again.
 

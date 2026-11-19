@@ -32,6 +32,10 @@ const OPTIONS = {
   force: { type: 'boolean', default: false },
   refresh: { type: 'boolean', default: false },
   'bundle-id': { type: 'string' },
+  // Re-signing is opt-in: patching only touches main-*.js, so the original
+  // signature stays valid and keeps the Developer ID identity/updater behaviour.
+  sign: { type: 'boolean', default: false },
+  // Kept for backwards compatibility; re-signing is now off by default.
   'no-sign': { type: 'boolean', default: false },
   'no-native': { type: 'boolean', default: false },
   'build-native': { type: 'boolean', default: false },
@@ -267,8 +271,9 @@ function findLoaderPath(injectionLine) {
 }
 
 function signEverything({ app, source, opts, addonPath, entitlements = null }) {
-  if (opts['no-sign'] || PLATFORM !== 'darwin') {
-    info('skipping codesign (--no-sign or non-macOS)');
+  if (PLATFORM !== 'darwin') return { signed: false, verified: null };
+  if (!opts.sign) {
+    info('leaving the app signature intact (pass --sign to re-sign ad-hoc)');
     return { signed: false, verified: null };
   }
 
@@ -335,6 +340,11 @@ function commandPatch(opts) {
   ensureNotRunning(app);
   ensureWritable(app);
 
+  // A quarantined bundle with a modified sealed resource is rejected by
+  // Gatekeeper. Removing the flag is what makes the patched app launchable;
+  // re-signing ad-hoc would not satisfy Gatekeeper either.
+  if (PLATFORM === 'darwin') patcher.stripQuarantine(app);
+
   if (!inPlace && paths.stockAppRunning()) {
     warn(
       'stock /Applications/Qobuz.app is running. The patched app shares its profile ' +
@@ -346,9 +356,9 @@ function commandPatch(opts) {
   }
 
   // Extract entitlements before touching the app, while the original signature
-  // is still intact.
+  // is still intact. Only needed when explicitly re-signing.
   let entitlements = null;
-  if (PLATFORM === 'darwin') {
+  if (opts.sign && PLATFORM === 'darwin') {
     try {
       entitlements = patcher.extractEntitlements(source);
     } catch {
@@ -424,7 +434,7 @@ function commandPatch(opts) {
   check(true, 'main file', result.mainFile);
   check(true, 'injection', result.injectionLine);
   check(fs.existsSync(result.backupFile), 'backup', result.backupFile);
-  check(Boolean(signing.verified), 'codesign', signing.signed ? 'ad-hoc' : 'skipped');
+  check(true, 'signature', signing.signed ? 're-signed (ad-hoc)' : 'original (left intact)');
   info(`\n${paint('green', 'Done.')} Launch with: ${paint('bold', `open "${app}"`)}`);
   info(`Logs: ${paths.logFile(PLATFORM)}`);
   info(
@@ -441,8 +451,9 @@ function commandRestore(opts) {
   ensureWritable(app);
 
   // Extract entitlements before restoring, while the signature is intact.
+  // Only needed when explicitly re-signing.
   let entitlements = null;
-  if (PLATFORM === 'darwin') {
+  if (opts.sign && PLATFORM === 'darwin') {
     try {
       entitlements = patcher.extractEntitlements(source);
     } catch {
@@ -462,16 +473,24 @@ function commandRestore(opts) {
   }
 
   info(`restored main file from ${result.restoredFrom}`);
-  signEverything({ app, source, opts, addonPath: null, entitlements });
+  const signing = signEverything({ app, source, opts, addonPath: null, entitlements });
 
   if (opts.json) {
-    info(JSON.stringify({ ok: true, ...result }, null, 2));
+    info(JSON.stringify({ ok: true, ...result, signing }, null, 2));
     return;
   }
 
   header('Restored');
   check(true, 'main file', result.mainFile);
   check(true, 'source', result.restoredFrom);
+  if (!signing.signed && PLATFORM === 'darwin') {
+    const sealed = patcher.verifyApp(app);
+    check(
+      sealed.ok,
+      'bundle seal',
+      sealed.ok ? 'valid again' : 'still modified (app was re-signed before; pass --sign)',
+    );
+  }
 }
 
 function commandDoctor(opts) {
@@ -501,7 +520,8 @@ function commandDoctor(opts) {
     [...new Set(addonCandidates)].find((candidate) => fs.existsSync(candidate)) || null;
 
   const signature = targetInfo ? patcher.signatureInfo(app) : null;
-  const verification = targetInfo ? patcher.verifyApp(app) : null;
+  const verification = targetInfo ? patcher.verifyExecutable(app) : null;
+  const sealVerification = targetInfo ? patcher.verifyApp(app) : null;
   const logLines = tailFile(paths.logFile(PLATFORM), 30);
   const logErrors = logLines
     .split('\n')
@@ -532,6 +552,9 @@ function commandDoctor(opts) {
     warnings.push('target contains the legacy qobuz-mod-bootstrap.js patch');
   }
   if (modsWithErrors.length > 0) warnings.push('some mod manifests could not be read');
+  if (verification && !verification.ok) {
+    warnings.push(`app executable signature is invalid: ${verification.output}`);
+  }
 
   const report = {
     tool: { version: VERSION, platform: PLATFORM, node: process.version },
@@ -550,6 +573,7 @@ function commandDoctor(opts) {
     addon,
     signature,
     verification,
+    sealVerification,
     running: {
       stock: paths.stockAppRunning(),
       target: targetInfo ? paths.isAppRunning(app) : false,
@@ -630,8 +654,37 @@ function commandDoctor(opts) {
 
   header('Signing');
   if (verification && signature) {
-    check(verification.ok, 'codesign verify', verification.ok ? '' : verification.output);
-    check(Boolean(signature.signature), 'signature', `${signature.signature || '?'} / ${signature.identifier || '?'}`);
+    const kind =
+      signature.signatureType === 'adhoc'
+        ? 'ad-hoc'
+        : signature.signatureType === 'developer-id'
+          ? 'Developer ID'
+          : 'unknown';
+    check(
+      Boolean(signature.identifier),
+      'identity',
+      `${kind} / ${signature.identifier || '?'}${
+        signature.teamIdentifier && signature.teamIdentifier !== 'not set'
+          ? ` (${signature.teamIdentifier})`
+          : ''
+      }`,
+    );
+    check(
+      verification.ok,
+      'executable signature',
+      verification.ok ? verification.executable : verification.output,
+    );
+    const sealed = Boolean(sealVerification && sealVerification.ok);
+    const injected = Boolean(inspection && inspection.injected);
+    check(
+      sealed || injected,
+      'bundle seal',
+      sealed
+        ? 'intact'
+        : injected
+          ? 'modified by the loader injection (expected)'
+          : (sealVerification ? sealVerification.output : 'unknown'),
+    );
   } else {
     check(false, 'signature', 'not available');
   }
@@ -732,12 +785,12 @@ Usage:
   qobuz-mod <command> [options]
 
 Commands:
-  patch       Copy the stock app (if needed), install runtime/mods, inject the
-              loader, and ad-hoc sign the result.
-  restore     Restore the original main file from the patcher backup and re-sign.
+  patch       Copy the stock app (if needed), install runtime/mods, and inject the
+              loader. The original code signature is left intact.
+  restore     Restore the original main file from the patcher backup.
   update      Refresh the target from /Applications/Qobuz.app and re-patch.
-  doctor      Report app version, paths, injection status, config, mods, signing,
-              running processes, and recent log errors.
+  doctor      Report app version, paths, injection status, config, mods, signature
+              status, running processes, and recent log errors.
   list        List installed mods and their enabled state.
   build-native Build the macOS Now Playing N-API addon.
   version     Print the CLI version.
@@ -750,7 +803,8 @@ Options:
       --refresh          Re-copy the target from the source before patching
       --force            Overwrite bundled mods / allow edge-case patches
       --bundle-id <id>   Bundle id for the copied app
-      --no-sign          Skip codesign (not recommended)
+      --sign             Re-sign the app ad-hoc after patching (not recommended:
+                         replaces the Developer ID identity with a cdhash)
       --no-native        Skip building the Now Playing addon
       --build-native     Rebuild the Now Playing addon even if present
       --json             Machine-readable output (doctor/list/patch/restore)

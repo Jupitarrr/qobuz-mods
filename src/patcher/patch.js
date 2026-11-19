@@ -179,6 +179,9 @@ function restorePatch({ appPath, configDir, platform = process.platform }) {
   if (fs.existsSync(backupFile)) {
     fs.copyFileSync(backupFile, mainFile);
     restoredFrom = backupFile;
+    // Remove the backup: it lives inside the sealed bundle, so leaving it behind
+    // keeps `codesign --verify` failing even after the original file is back.
+    fs.unlinkSync(backupFile);
   } else {
     const text = fs.readFileSync(mainFile, 'utf8');
     const stripped = stripInjection(text);
