@@ -1,6 +1,6 @@
 'use strict';
 
-// Qobuz Mods — in-app menu (core renderer mod, always injected).
+// Qobuz Mods — user-menu item + mods panel (core renderer mod, always injected).
 
 (() => {
   if (window.__qobuzModsMenuInstalled) return;
@@ -19,44 +19,17 @@
     busy: false,
     status: '',
     statusIsError: false,
+    restartRequired: false,
   };
 
   const css = `
-    #${PREFIX}-fab {
-      position: fixed;
-      right: 20px;
-      bottom: 96px;
-      z-index: 2147483000;
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      margin: 0;
-      padding: 8px 13px;
-      border: 1px solid rgba(255,255,255,.16);
-      border-radius: 999px;
-      background: rgba(18,18,18,.92);
-      color: #f1f1f1;
-      font: 600 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      letter-spacing: .01em;
-      box-shadow: 0 6px 22px rgba(0,0,0,.38);
-      cursor: pointer;
-      -webkit-app-region: no-drag;
-      backdrop-filter: blur(12px);
-    }
-    #${PREFIX}-fab:hover { background: rgba(34,34,34,.96); }
-    #${PREFIX}-fab .dot {
-      width: 7px; height: 7px; border-radius: 50%;
-      background: #f5a623; display: none;
-    }
-    #${PREFIX}-fab.has-pending .dot { display: inline-block; }
-
     #${PREFIX}-panel {
       position: fixed;
       right: 20px;
-      bottom: 140px;
+      top: 64px;
       z-index: 2147483001;
       width: min(430px, calc(100vw - 40px));
-      max-height: min(70vh, 660px);
+      max-height: min(72vh, calc(100vh - 88px));
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -70,6 +43,18 @@
       backdrop-filter: blur(18px);
     }
     #${PREFIX}-panel[hidden] { display: none; }
+
+    .${PREFIX}-menu-item {
+      position: relative;
+      -webkit-app-region: no-drag;
+    }
+    .${PREFIX}-menu-item .${PREFIX}-dot {
+      display: none;
+      width: 7px; height: 7px; margin-left: auto;
+      border-radius: 50%; background: #f5a623;
+      flex: 0 0 auto;
+    }
+    .${PREFIX}-menu-item.has-pending .${PREFIX}-dot { display: inline-block; }
 
     .${PREFIX}-header {
       display: flex; align-items: center; justify-content: space-between;
@@ -179,13 +164,15 @@
   }
 
   const ui = {
-    fab: null,
+    menuItem: null,
     panel: null,
     body: null,
     banner: null,
     status: null,
     version: null,
   };
+
+  let menuSyncScheduled = false;
 
   function setStatus(message, isError = false) {
     state.status = message || '';
@@ -195,17 +182,109 @@
     ui.status.classList.toggle('error', state.statusIsError);
   }
 
+  function applyPendingState() {
+    if (!ui.menuItem) return;
+    ui.menuItem.classList.toggle('has-pending', Boolean(state.restartRequired));
+    ui.menuItem.title = state.restartRequired
+      ? 'Qobuz mods — restart required'
+      : 'Qobuz mods';
+  }
+
+  function closeUserMenu() {
+    const activeMenu = document.querySelector('.NavBarMenu.NavBarMenu--isActive');
+    if (!activeMenu) return;
+    const avatar = document.querySelector('.NavBar__avatar');
+    if (avatar) avatar.click();
+  }
+
+  function createMenuItem() {
+    const item = make('div', `${PREFIX}-menu-item MenuItem NavBarMenu__item`);
+    item.setAttribute('role', 'menuitem');
+    item.tabIndex = 0;
+
+    const text = make('div', 'MenuItem__text icon-magic-stars', 'Mods');
+    text.appendChild(make('span', `${PREFIX}-dot`));
+    item.appendChild(text);
+
+    const activate = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(true);
+    };
+    item.addEventListener('click', activate);
+    item.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') activate(event);
+    });
+
+    return item;
+  }
+
+  function syncMenuItem() {
+    menuSyncScheduled = false;
+    const items = document.querySelector('.NavBarMenu__items');
+    if (!items) {
+      ui.menuItem = null;
+      return;
+    }
+
+    let item = items.querySelector(`.${PREFIX}-menu-item`);
+    if (!item) {
+      item = createMenuItem();
+      ui.menuItem = item;
+    }
+
+    // Qobuz draws the menu separator with .NavBarMenu__item:last-child, so
+    // inserting immediately after Settings puts Mods before the separator and
+    // Log out (which stays last).
+    const settings = items.querySelector('.MenuItem__text.icon-settings');
+    const settingsItem = settings ? settings.closest('.NavBarMenu__item') : null;
+    const logout = items.querySelector('.MenuItem__text.icon-logout');
+    const logoutItem = logout ? logout.closest('.NavBarMenu__item') : null;
+    const last = logoutItem || items.lastElementChild;
+
+    if (settingsItem) {
+      if (settingsItem.nextSibling !== item) settingsItem.after(item);
+    } else if (last && last !== item) {
+      if (item.nextSibling !== last) items.insertBefore(item, last);
+    } else if (item.parentElement !== items) {
+      items.appendChild(item);
+    }
+
+    applyPendingState();
+  }
+
+  function scheduleMenuSync() {
+    if (menuSyncScheduled) return;
+    menuSyncScheduled = true;
+    queueMicrotask(syncMenuItem);
+  }
+
+  function watchUserMenu() {
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.removedNodes) {
+          if (node === ui.menuItem || (node.nodeType === 1 && node.contains(ui.menuItem))) {
+            scheduleMenuSync();
+            return;
+          }
+        }
+        for (const node of record.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          if (
+            node.classList?.contains('NavBarMenu__items') ||
+            node.querySelector?.('.NavBarMenu__items')
+          ) {
+            scheduleMenuSync();
+            return;
+          }
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
   function createUi() {
     injectStyle();
-
-    const fab = make('button', '', 'Mods');
-    fab.id = `${PREFIX}-fab`;
-    fab.type = 'button';
-    fab.title = 'Qobuz Mods';
-    fab.setAttribute('aria-label', 'Open Qobuz mods');
-    fab.appendChild(make('span', 'dot'));
-    fab.addEventListener('click', () => setOpen(!state.open));
-    ui.fab = fab;
 
     const panel = make('div', '');
     panel.id = `${PREFIX}-panel`;
@@ -277,20 +356,24 @@
     panel.appendChild(footer);
     ui.panel = panel;
 
-    document.body.appendChild(fab);
     document.body.appendChild(panel);
 
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && state.open) setOpen(false);
     });
 
+    watchUserMenu();
+    syncMenuItem();
     refreshMods();
   }
 
   function setOpen(open) {
     state.open = Boolean(open);
     ui.panel.hidden = !state.open;
-    if (state.open) refreshMods();
+    if (state.open) {
+      closeUserMenu();
+      refreshMods();
+    }
   }
 
   async function refreshMods() {
@@ -308,7 +391,8 @@
     if (!data) return;
     if (ui.version) ui.version.textContent = `v${data.version || ''}`;
     ui.banner.hidden = !data.restartRequired;
-    ui.fab.classList.toggle('has-pending', Boolean(data.restartRequired));
+    state.restartRequired = Boolean(data.restartRequired);
+    applyPendingState();
 
     const pane = ui.body;
     pane.textContent = '';
@@ -369,7 +453,7 @@
   }
 
   function mount() {
-    if (document.getElementById(`${PREFIX}-fab`)) return;
+    if (document.getElementById(`${PREFIX}-panel`)) return;
     createUi();
   }
 

@@ -2,7 +2,7 @@
   "id": "mods-menu",
   "name": "Mods Menu",
   "version": "0.1.0",
-  "description": "In-app panel for enabling and disabling Qobuz mods.",
+  "description": "Adds a Mods item to the Qobuz user menu for enabling and disabling mods.",
   "core": true,
   "renderer": "renderer.js",
   "platforms": ["darwin", "win32"]

@@ -1,13 +1,13 @@
 # Qobuz Mods
 
 A Spicetify-style modding framework for **Qobuz Desktop**. Mods live outside the app
-bundle, the patcher injects a single loader line into Qobuz's writable main JS file, and an
-in-app **Mods** panel lets you enable/disable them.
+bundle, the patcher injects a single loader line into Qobuz's writable main JS file, and a
+**Mods** item in Qobuz's user menu opens a panel to enable/disable them.
 
 Status: **macOS first iteration working.** The installed `/Applications/Qobuz.app` can be
-modded and unmodded in place, the menu appears, and Now Playing publishes to macOS Control
-Center / the system Now Playing API. Windows scaffolding exists, but Windows is **not claimed
-as supported** until tested.
+modded and unmodded in place, the user-menu item appears, and Now Playing publishes to macOS
+Control Center / the system Now Playing API. Windows scaffolding exists, but Windows is **not
+claimed as supported** until tested.
 
 ## What works today
 
@@ -15,8 +15,9 @@ as supported** until tested.
   `/Applications/Qobuz.app`. `./uninstall.sh` restores the original and re-signs.
 - Runtime loader with config, logging, per-mod error isolation, dependency ordering, and a
   narrow IPC bridge.
-- In-app **Mods** panel: list mods, enable/disable, restart-required state, open mods folder,
-  view log, and restart Qobuz.
+- In-app **Mods** panel: opened from a **Mods** item between Settings and Log out in the
+  user menu. Lists mods, enables/disables them, shows restart-required state, and provides
+  open mods folder, view log, and restart Qobuz.
 - **Now Playing** (macOS): track metadata, artwork, duration, elapsed time, play/pause state,
   and next/previous/toggle from Control Center / media keys. Uses the existing
   `MPNowPlayingInfoCenter` / `MPRemoteCommandCenter` N-API addon.
@@ -156,7 +157,10 @@ before Qobuz creates the window. The preload:
 - asks the main process for enabled renderer sources via `qobuzmods:renderer-sources`;
 - evals the menu and any renderer mods with the preload's own `require` in scope.
 
-The menu is a core mod (`mods/mods-menu/renderer.js`) and cannot be disabled.
+The menu is a core mod (`mods/mods-menu/renderer.js`) and cannot be disabled. It inserts
+its **Mods** item directly into Qobuz's own `.NavBarMenu__items` list (after Settings and
+before Log out), so no extra app-bundle patch is needed. A `MutationObserver` re-inserts the
+item if React remounts the user menu.
 
 ## Layout
 
@@ -166,7 +170,7 @@ src/patcher/                paths, backup, injection, plist, codesign, runtime i
 runtime/loader.js           injected main-process loader + player bridge + IPC
 runtime/renderer.js         renderer preload (bridge + renderer mod eval)
 mods/now-playing/           macOS MPNowPlayingInfoCenter addon + main mod
-mods/mods-menu/             core in-app menu
+mods/mods-menu/             core user-menu item + mods panel
 scripts/build-native.sh     builds the macOS N-API addon
 test/loader-smoke.js        headless fake-Electron loader test
 install.sh / uninstall.sh   one-command mod/unmod of the installed app
