@@ -9,8 +9,6 @@ modded and unmodded in place, the menu appears, and Now Playing publishes to mac
 Center / the system Now Playing API. Windows scaffolding exists, but Windows is **not claimed
 as supported** until tested.
 
-See [`FINDINGS.md`](FINDINGS.md) for the full investigation report and patch strategy.
-
 ## What works today
 
 - **In-place patcher**: backs up the main JS, injects one require line, and ad-hoc re-signs
@@ -284,8 +282,8 @@ with the old addon (no seek) rather than a regression. It can be added later via
 
 No Windows support is claimed yet. The CLI already understands `main-win32.js` and
 `%APPDATA%\QobuzMods`, and mods can declare `windows` in `platforms`. The next steps are
-documented in [`docs/WINDOWS.md`](docs/WINDOWS.md): port the qobuz-smtc native WinRT addon,
-hook the same runtime player bridge, and test against Qobuz 8.3.0 / Electron 32.3.3.
+to port the qobuz-smtc native WinRT addon, hook the same runtime player bridge, and test
+against Qobuz 8.3.0 / Electron 32.3.3.
 
 ## Tests
 
@@ -297,7 +295,3 @@ The smoke test uses a fake Electron main process, a temporary config dir, and th
 it checks preload installation, renderer sources, track/progress events, mod listing, mod
 toggling, doctor output, and log writes. It never launches Qobuz or reads the real Qobuz
 profile.
-
-## Author
-
-Built and maintained by [Jupitarrr](https://github.com/jupitaaar) (`308037480+jupitarrr@users.noreply.github.com`).
