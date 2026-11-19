@@ -257,13 +257,17 @@ If macOS quarantines the app, run:
 xattr -dr com.apple.quarantine "/Applications/Qobuz.app"
 ```
 
-The patched app's Squirrel auto-updater cannot install updates because the app is ad-hoc
-signed. Update manually:
+The patched app's Squirrel auto-updater may not install updates because the app is re-signed
+ad-hoc. Update manually:
 
 1. quit Qobuz;
-2. launch the stock Qobuz app and let it update;
-3. quit it;
-4. run `node bin/qobuz-mod.js update` (or `./install.sh`).
+2. run `./uninstall.sh` to restore the original main JS;
+3. launch Qobuz and let it update (or reinstall Qobuz);
+4. quit Qobuz;
+5. run `./install.sh` again.
+
+`node bin/qobuz-mod.js update` re-applies the patch and rebuilds the native addon; the
+patcher detects a changed stock main file and refreshes its backup.
 
 ## macOS Now Playing
 
