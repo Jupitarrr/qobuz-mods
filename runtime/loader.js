@@ -850,7 +850,9 @@ function loadMods() {
       continue;
     }
     if (!mod.manifest.main) {
-      // Renderer-only mods have nothing to activate in the main process.
+      // Renderer-only mods have nothing to activate in the main process. Mark
+      // them active so a later disable/enable is correctly reported as pending.
+      if (mod.manifest.renderer) mod.active = mod.enabled;
       continue;
     }
 
@@ -925,7 +927,7 @@ function computeRestartRequired() {
   return [...state.mods.values()].some((mod) => {
     if (mod.manifest.core) return false;
     if (!mod.platformOk) return false;
-    if (!mod.manifest.main) return false;
+    if (!mod.manifest.main && !mod.manifest.renderer) return false;
     // A mod that failed to load is not a pending toggle; it is an error.
     if (mod.error) return false;
     return mod.enabled !== mod.active;

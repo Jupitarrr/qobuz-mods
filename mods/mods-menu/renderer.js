@@ -473,7 +473,7 @@
       head.appendChild(make('span', `${PREFIX}-mod-version`, `v${mod.version || '0.0.0'}`));
       if (mod.core) head.appendChild(make('span', `${PREFIX}-badge`, 'core'));
       if (!mod.platformOk) head.appendChild(make('span', `${PREFIX}-badge`, 'unsupported'));
-      if (mod.enabled && !mod.active && !mod.core && mod.platformOk) {
+      if (mod.enabled && !mod.active && !mod.core && mod.platformOk && !mod.error) {
         head.appendChild(make('span', `${PREFIX}-badge`, 'restart'));
       }
 
