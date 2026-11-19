@@ -2,7 +2,7 @@
   "id": "mods-menu",
   "name": "Mods Menu",
   "version": "0.1.0",
-  "description": "In-app panel for enabling and disabling mods and browsing last played albums.",
+  "description": "In-app panel for enabling and disabling Qobuz mods.",
   "author": "qobuz-mods",
   "core": true,
   "renderer": "renderer.js",

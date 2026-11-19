@@ -21,7 +21,7 @@ fs.writeFileSync(
   JSON.stringify(
     {
       version: 1,
-      enabled: { 'now-playing': false, 'last-played': true },
+      enabled: { 'now-playing': false },
       options: {},
     },
     null,
@@ -231,13 +231,6 @@ async function main() {
     endOfFile: false,
   });
 
-  const list = await fakeIpcMain.invoke('qobuzmods:mod-invoke', 'last-played', 'list');
-  assert(list.albums.length === 1, 'last-played recorded one album');
-  assert(list.albums[0].albumId === 'xne8h1xxlpfbc', 'album id recorded');
-  assert(list.albums[0].albumTitle === 'Big Ideas', 'album title recorded');
-  assert(list.albums[0].artist === 'Remi Wolf', 'artist recorded');
-  assert(list.albums[0].playCount === 1, 'play count is one');
-
   const toggled = await fakeIpcMain.invoke('qobuzmods:set-enabled', 'now-playing', true);
   assert(toggled.restartRequired === true, 'toggling sets restartRequired');
   assert(
@@ -250,9 +243,12 @@ async function main() {
   assert(doctor.player.playing, 'doctor sees playing state');
   assert(doctor.mods.length >= 2, 'doctor lists mods');
 
+  const mods = await fakeIpcMain.invoke('qobuzmods:list');
+  assert(mods.mods.some((m) => m.id === 'mods-menu' && m.core), 'core menu listed');
+  assert(mods.mods.some((m) => m.id === 'now-playing'), 'now-playing listed');
+  assert(!mods.mods.some((m) => m.id === 'last-played'), 'last-played is gone');
+
   fakeApp.emit('before-quit');
-  const dataFile = path.join(configDir, 'data', 'last-played', 'last-played.json');
-  assert(fs.existsSync(dataFile), 'last-played.json written on quit');
 
   const log = fs.readFileSync(logFile, 'utf8');
   assert(log.includes('loader ready'), 'log contains loader ready');
@@ -261,7 +257,6 @@ async function main() {
   console.log('loader smoke test OK');
   console.log(`temp: ${temp}`);
   console.log(`log:  ${logFile}`);
-  console.log(`json: ${dataFile}`);
 }
 
 main().catch((error) => {

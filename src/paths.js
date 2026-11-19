@@ -69,19 +69,8 @@ function defaultSourceApp(platform = process.platform) {
 }
 
 function defaultTargetApp(platform = process.platform) {
-  switch (platform) {
-    case 'darwin':
-      return path.join(home(), 'Applications', 'Qobuz Mod.app');
-    case 'win32':
-      return path.join(
-        process.env.LOCALAPPDATA || path.join(home(), 'AppData', 'Local'),
-        'Programs',
-        'Qobuz Mod',
-        'Qobuz.exe',
-      );
-    default:
-      return path.join(home(), '.local', 'bin', 'qobuz-mod');
-  }
+  // In-place patching is the default. Use --app to target a copy.
+  return defaultSourceApp(platform);
 }
 
 function resourcesAppDir(appPath, platform = process.platform) {

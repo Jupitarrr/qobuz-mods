@@ -12,6 +12,9 @@
   },
   "scripts": {
     "build:native": "bash scripts/build-native.sh",
+    "patch": "node bin/qobuz-mod.js patch",
+    "unpatch": "node bin/qobuz-mod.js restore",
+    "doctor": "node bin/qobuz-mod.js doctor",
     "patch:dev": "node bin/qobuz-mod.js patch --dev --app \".scratch/Qobuz Dev.app\"",
     "doctor:dev": "node bin/qobuz-mod.js doctor --app \".scratch/Qobuz Dev.app\"",
     "list": "node bin/qobuz-mod.js list",

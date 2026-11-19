@@ -15,10 +15,7 @@
   const PREFIX = 'qobuz-mods';
   const state = {
     open: false,
-    tab: 'mods',
     data: null,
-    lastPlayed: null,
-    pollTimer: null,
     busy: false,
     status: '',
     statusIsError: false,
@@ -77,6 +74,7 @@
     .${PREFIX}-header {
       display: flex; align-items: center; justify-content: space-between;
       padding: 14px 16px 10px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
     }
     .${PREFIX}-title { display: flex; align-items: baseline; gap: 8px; }
     .${PREFIX}-title strong { font-size: 15px; letter-spacing: .01em; }
@@ -88,18 +86,6 @@
       cursor: pointer;
     }
     .${PREFIX}-close:hover { background: rgba(255,255,255,.08); color: #fff; }
-
-    .${PREFIX}-tabs {
-      display: flex; gap: 4px; padding: 0 12px 10px;
-      border-bottom: 1px solid rgba(255,255,255,.08);
-    }
-    .${PREFIX}-tab {
-      border: 0; border-radius: 7px; padding: 6px 10px;
-      background: transparent; color: #9a9a9a;
-      font: 600 12px/1.2 inherit; cursor: pointer;
-    }
-    .${PREFIX}-tab:hover { color: #ddd; background: rgba(255,255,255,.05); }
-    .${PREFIX}-tab.active { color: #fff; background: rgba(47,124,246,.18); }
 
     .${PREFIX}-banner {
       margin: 10px 14px 0; padding: 8px 10px;
@@ -153,33 +139,6 @@
     .${PREFIX}-empty {
       padding: 28px 10px; text-align: center; color: #8a8a8a; font-size: 12px;
     }
-    .${PREFIX}-album {
-      display: flex; align-items: center; gap: 10px;
-      padding: 8px; border-radius: 9px;
-    }
-    .${PREFIX}-album:hover { background: rgba(255,255,255,.045); }
-    .${PREFIX}-cover {
-      width: 42px; height: 42px; flex: 0 0 auto;
-      border-radius: 6px; object-fit: cover; background: #2a2a2a;
-    }
-    .${PREFIX}-album-main { min-width: 0; flex: 1; }
-    .${PREFIX}-album-title {
-      color: #f0f0f0; font-weight: 600;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .${PREFIX}-album-sub {
-      color: #909090; font-size: 11px;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .${PREFIX}-album-meta {
-      flex: 0 0 auto; text-align: right; color: #828282; font-size: 11px;
-    }
-    .${PREFIX}-open {
-      margin-top: 3px; border: 0; padding: 0;
-      background: transparent; color: #5b9bff;
-      font: 600 11px/1.2 inherit; cursor: pointer;
-    }
-    .${PREFIX}-open:hover { text-decoration: underline; }
 
     .${PREFIX}-footer {
       display: flex; gap: 8px; padding: 10px 14px 13px;
@@ -219,6 +178,15 @@
     return node;
   }
 
+  const ui = {
+    fab: null,
+    panel: null,
+    body: null,
+    banner: null,
+    status: null,
+    version: null,
+  };
+
   function setStatus(message, isError = false) {
     state.status = message || '';
     state.statusIsError = Boolean(isError);
@@ -226,44 +194,6 @@
     ui.status.textContent = state.status;
     ui.status.classList.toggle('error', state.statusIsError);
   }
-
-  function relativeTime(timestamp) {
-    const delta = Date.now() - Number(timestamp || 0);
-    if (!Number.isFinite(delta) || delta < 0) return '';
-    const minute = 60 * 1000;
-    const hour = 60 * minute;
-    const day = 24 * hour;
-    if (delta < minute) return 'just now';
-    if (delta < hour) return `${Math.floor(delta / minute)}m ago`;
-    if (delta < day) return `${Math.floor(delta / hour)}h ago`;
-    if (delta < 7 * day) return `${Math.floor(delta / day)}d ago`;
-    try {
-      return new Date(timestamp).toLocaleDateString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        year: new Date(timestamp).getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
-      });
-    } catch {
-      return '';
-    }
-  }
-
-  function plural(count, singular, pluralForm) {
-    return `${count} ${count === 1 ? singular : pluralForm}`;
-  }
-
-  const ui = {
-    fab: null,
-    panel: null,
-    body: null,
-    modsPane: null,
-    lastPane: null,
-    banner: null,
-    status: null,
-    version: null,
-    tabs: [],
-    restartButton: null,
-  };
 
   function createUi() {
     injectStyle();
@@ -273,8 +203,7 @@
     fab.type = 'button';
     fab.title = 'Qobuz Mods';
     fab.setAttribute('aria-label', 'Open Qobuz mods');
-    const dot = make('span', 'dot');
-    fab.prepend(dot);
+    fab.appendChild(make('span', 'dot'));
     fab.addEventListener('click', () => setOpen(!state.open));
     ui.fab = fab;
 
@@ -295,29 +224,12 @@
     header.appendChild(title);
     header.appendChild(close);
 
-    const tabs = make('div', `${PREFIX}-tabs`);
-    for (const [id, label] of [['mods', 'Mods'], ['last-played', 'Last played']]) {
-      const tab = make('button', `${PREFIX}-tab`, label);
-      tab.type = 'button';
-      tab.dataset.tab = id;
-      tab.addEventListener('click', () => setTab(id));
-      tabs.appendChild(tab);
-      ui.tabs.push(tab);
-    }
-
     const banner = make('div', `${PREFIX}-banner`, 'Restart Qobuz to apply mod changes.');
     banner.hidden = true;
     ui.banner = banner;
 
     const body = make('div', `${PREFIX}-body`);
-    const modsPane = make('div', '');
-    const lastPane = make('div', '');
-    lastPane.hidden = true;
-    body.appendChild(modsPane);
-    body.appendChild(lastPane);
     ui.body = body;
-    ui.modsPane = modsPane;
-    ui.lastPane = lastPane;
 
     const status = make('div', `${PREFIX}-status`, '');
     ui.status = status;
@@ -353,14 +265,12 @@
         setStatus(error.message || String(error), true);
       }
     });
-    ui.restartButton = restart;
 
     footer.appendChild(openFolder);
     footer.appendChild(showLog);
     footer.appendChild(restart);
 
     panel.appendChild(header);
-    panel.appendChild(tabs);
     panel.appendChild(banner);
     panel.appendChild(body);
     panel.appendChild(status);
@@ -374,46 +284,13 @@
       if (event.key === 'Escape' && state.open) setOpen(false);
     });
 
-    setTab('mods');
     refreshMods();
   }
 
   function setOpen(open) {
     state.open = Boolean(open);
     ui.panel.hidden = !state.open;
-    if (state.open) {
-      refreshMods();
-      if (state.tab === 'last-played') refreshLastPlayed();
-      startPolling();
-    } else {
-      stopPolling();
-    }
-  }
-
-  function setTab(tab) {
-    state.tab = tab;
-    for (const node of ui.tabs) {
-      node.classList.toggle('active', node.dataset.tab === tab);
-    }
-    ui.modsPane.hidden = tab !== 'mods';
-    ui.lastPane.hidden = tab !== 'last-played';
-    if (tab === 'last-played') refreshLastPlayed();
-    else refreshMods();
-  }
-
-  function startPolling() {
-    stopPolling();
-    state.pollTimer = setInterval(() => {
-      if (!state.open) return;
-      if (state.tab === 'last-played') refreshLastPlayed();
-    }, 4000);
-  }
-
-  function stopPolling() {
-    if (state.pollTimer) {
-      clearInterval(state.pollTimer);
-      state.pollTimer = null;
-    }
+    if (state.open) refreshMods();
   }
 
   async function refreshMods() {
@@ -433,7 +310,7 @@
     ui.banner.hidden = !data.restartRequired;
     ui.fab.classList.toggle('has-pending', Boolean(data.restartRequired));
 
-    const pane = ui.modsPane;
+    const pane = ui.body;
     pane.textContent = '';
 
     const mods = Array.isArray(data.mods) ? data.mods : [];
@@ -491,104 +368,12 @@
     }
   }
 
-  async function refreshLastPlayed() {
-    try {
-      const result = await api.invoke('mod-invoke', 'last-played', 'list');
-      state.lastPlayed = result;
-      renderLastPlayed();
-    } catch (error) {
-      state.lastPlayed = { error: error.message || String(error) };
-      renderLastPlayed();
-    }
-  }
-
-  function renderLastPlayed() {
-    const pane = ui.lastPane;
-    pane.textContent = '';
-
-    const result = state.lastPlayed;
-    if (!result) {
-      pane.appendChild(make('div', `${PREFIX}-empty`, 'Loading…'));
-      return;
-    }
-    if (result.error) {
-      pane.appendChild(
-        make(
-          'div',
-          `${PREFIX}-empty`,
-          `Last played is unavailable: ${result.error}`,
-        ),
-      );
-      return;
-    }
-
-    const albums = Array.isArray(result.albums) ? result.albums : [];
-    if (albums.length === 0) {
-      pane.appendChild(
-        make(
-          'div',
-          `${PREFIX}-empty`,
-          'No albums recorded yet. Play an album in Qobuz and it will appear here.',
-        ),
-      );
-      return;
-    }
-
-    for (const album of albums) {
-      const row = make('div', `${PREFIX}-album`);
-
-      if (album.artworkUrl) {
-        const cover = document.createElement('img');
-        cover.className = `${PREFIX}-cover`;
-        cover.loading = 'lazy';
-        cover.alt = '';
-        cover.src = album.artworkUrl;
-        cover.addEventListener('error', () => {
-          cover.style.visibility = 'hidden';
-        });
-        row.appendChild(cover);
-      } else {
-        row.appendChild(make('div', `${PREFIX}-cover`));
-      }
-
-      const main = make('div', `${PREFIX}-album-main`);
-      main.appendChild(
-        make('div', `${PREFIX}-album-title`, album.albumTitle || album.albumId || 'Unknown album'),
-      );
-      const sub = [album.artist, plural(Number(album.playCount) || 0, 'play', 'plays')]
-        .filter(Boolean)
-        .join(' · ');
-      main.appendChild(make('div', `${PREFIX}-album-sub`, sub));
-      if (album.albumId) {
-        const open = make('button', `${PREFIX}-open`, 'Open in Qobuz web player ↗');
-        open.type = 'button';
-        open.addEventListener('click', async (event) => {
-          event.stopPropagation();
-          try {
-            await api.invoke(
-              'open-external',
-              `https://play.qobuz.com/album/${encodeURIComponent(album.albumId)}`,
-            );
-          } catch (error) {
-            setStatus(error.message || String(error), true);
-          }
-        });
-        main.appendChild(open);
-      }
-
-      const meta = make('div', `${PREFIX}-album-meta`, relativeTime(album.lastPlayedAt));
-      row.appendChild(main);
-      row.appendChild(meta);
-      pane.appendChild(row);
-    }
-  }
-
   function mount() {
     if (document.getElementById(`${PREFIX}-fab`)) return;
     createUi();
   }
 
-  // The bundle may still be mounting React when did-finish-load fires.
+  // The bundle may still be mounting React when the preload runs.
   if (document.body) {
     mount();
   } else {

@@ -4,29 +4,75 @@ A Spicetify-style modding framework for **Qobuz Desktop**. Mods live outside the
 bundle, the patcher injects a single loader line into Qobuz's writable main JS file, and an
 in-app **Mods** panel lets you enable/disable them.
 
-Status: **macOS first iteration working.** The scratch app loads the framework, shows the
-mods menu, publishes Now Playing metadata, and records last-played albums. Windows
-scaffolding exists, but Windows is **not claimed as supported** until tested.
+Status: **macOS first iteration working.** The installed `/Applications/Qobuz.app` can be
+modded and unmodded in place, the menu appears, and Now Playing publishes to macOS Control
+Center / the system Now Playing API. Windows scaffolding exists, but Windows is **not claimed
+as supported** until tested.
 
 See [`FINDINGS.md`](FINDINGS.md) for the full investigation report and patch strategy.
 
 ## What works today
 
-- Non-destructive patcher: copies the stock app, backs up the main JS, injects one require
-  line, and ad-hoc re-signs the copy. `/Applications/Qobuz.app` is never modified.
+- **In-place patcher**: backs up the main JS, injects one require line, and ad-hoc re-signs
+  `/Applications/Qobuz.app`. `./uninstall.sh` restores the original and re-signs.
 - Runtime loader with config, logging, per-mod error isolation, dependency ordering, and a
   narrow IPC bridge.
 - In-app **Mods** panel: list mods, enable/disable, restart-required state, open mods folder,
-  view log, restart Qobuz, and a **Last played** tab.
+  view log, and restart Qobuz.
 - **Now Playing** (macOS): track metadata, artwork, duration, elapsed time, play/pause state,
   and next/previous/toggle from Control Center / media keys. Uses the existing
   `MPNowPlayingInfoCenter` / `MPRemoteCommandCenter` N-API addon.
-- **Last Played**: records album starts from the player bridge and lists albums by most recent
-  play. Independent of favorites.
 - `doctor`, `patch`, `restore`, `update`, `list`, and `build-native` commands.
 - Headless loader smoke test (`npm run test:smoke`).
 
-## Quick start (development, scratch copy)
+## Why there is no Last Played mod
+
+The requested “last played albums” feature was investigated against the live account and the
+official Qobuz API v1.17 documentation:
+
+- `favorite/getUserFavorites` has no `sort` parameter. Extra `sort`/`order` values are ignored:
+  every candidate returned the same album order.
+- Album items only expose `favorited_at` (library-add date), not a last-played timestamp.
+- There is no play-history read endpoint in the official API. Candidate paths such as
+  `user/getLastPlayed`, `playhistory/get`, and `track/getLastPlayed` return 400/503.
+- `discover/index` containers contain new/recent releases and editorial sections, not the
+  user's recently played albums.
+- Qobuz's “Playing History” is the local play-queue history (persisted in `player-0.json`),
+  and the mobile app's “Recently played” is device/session-local.
+
+Because the feature cannot be sourced from the account, the Last Played mod was removed rather
+than maintaining a separate local log. It can return if Qobuz exposes an account-level history
+endpoint.
+
+## Quick start (install / patch in place)
+
+```sh
+cd ~/git/qobuz-mods
+./install.sh
+open "/Applications/Qobuz.app"
+```
+
+Quit Qobuz first. The installer:
+
+1. builds the native Now Playing addon if needed;
+2. installs `runtime/` and first-party mods into
+   `~/Library/Application Support/QobuzMods/`;
+3. backs up `main-darwin.js` and injects the loader into `/Applications/Qobuz.app`;
+4. ad-hoc re-signs the app with its original entitlements.
+
+To undo:
+
+```sh
+./uninstall.sh
+```
+
+This restores `main-darwin.js` from the backup and re-signs the app. Config, logs, and mods
+under `QobuzMods/` are kept; delete that directory to remove user data.
+
+If `/Applications/Qobuz.app` is not writable by your user, the CLI tells you the exact
+`sudo chown` command. It never runs sudo for you.
+
+## Development (scratch copy)
 
 ```sh
 cd ~/git/qobuz-mods
@@ -39,37 +85,27 @@ open ".scratch/Qobuz Dev.app"
 loader/mods only need an app restart, not a re-patch. Config and data still live in
 `~/Library/Application Support/QobuzMods/`.
 
-Quit the stock `/Applications/Qobuz.app` first: both apps share the Qobuz profile and Electron
-singleton lock. The framework does **not** kill a running Qobuz for you.
+The dev copy gets a distinct bundle id (`com.qobuz.desktop.devmod`) and display name so it can
+coexist in LaunchServices with the stock app. It still shares the Qobuz profile and Electron
+singleton lock, so quit the stock app first.
 
-## Install (copy + patch)
-
-```sh
-cd ~/git/qobuz-mods
-./scripts/build-native.sh
-./install.sh
-open "$HOME/Applications/Qobuz Mod.app"
-```
-
-The default target is `~/Applications/Qobuz Mod.app` (no sudo). The installer:
-
-1. builds the native Now Playing addon if needed;
-2. copies `/Applications/Qobuz.app` to the target (unless it already exists);
-3. installs `runtime/` and first-party mods into
-   `~/Library/Application Support/QobuzMods/`;
-4. sets a distinct bundle id and display name, injects the loader, and ad-hoc signs the copy;
-5. registers the result with LaunchServices.
-
-Useful options:
+## CLI
 
 ```sh
-node bin/qobuz-mod.js patch --app "/path/to/Qobuz Mod.app"
-node bin/qobuz-mod.js patch --refresh          # re-copy the stock app, then patch
-node bin/qobuz-mod.js update                   # same as patch --refresh --force
-node bin/qobuz-mod.js restore --app "..."      # restore original main JS + re-sign
-node bin/qobuz-mod.js doctor  --app "..."      # full diagnostic report
-node bin/qobuz-mod.js list                     # installed mods
+qobuz-mod patch [--app PATH] [--source PATH] [--dev] [--refresh] [--force]
+qobuz-mod restore [--app PATH]
+qobuz-mod update [--app PATH]
+qobuz-mod doctor [--app PATH] [--json]
+qobuz-mod list [--json]
+qobuz-mod build-native
 ```
+
+- `patch` defaults to `/Applications/Qobuz.app` **in place**.
+- `--app` selects another app; if it does not exist, a copy of `--source` is created.
+- `--refresh` re-copies a non-in-place target from the source, then patches.
+- `--dev` uses the repo runtime/mods and requires a scratch `--app` path.
+- `--force` allows edge-case patches and overwrites bundled/user mods on install.
+- `--no-sign` skips codesign; `--no-native` skips the addon build.
 
 `doctor` reports app/Electron versions, paths, injection and backup state, codesign status,
 config, mods, running processes, and recent log errors.
@@ -78,8 +114,8 @@ config, mods, running processes, and recent log errors.
 
 ### One-line injection
 
-The patcher backs up the original `main-darwin.js` to `main-darwin.js.qobuzmod-backup` and
-prepends:
+The patcher backs up the original `main-darwin.js` to
+`main-darwin.js.qobuzmod-backup` and prepends:
 
 ```js
 ;require("/absolute/path/to/runtime/loader.js");/*qobuz-mods*/
@@ -132,15 +168,15 @@ src/patcher/                paths, backup, injection, plist, codesign, runtime i
 runtime/loader.js           injected main-process loader + player bridge + IPC
 runtime/renderer.js         renderer preload (bridge + renderer mod eval)
 mods/now-playing/           macOS MPNowPlayingInfoCenter addon + main mod
-mods/last-played/           local album history + IPC list/clear
 mods/mods-menu/             core in-app menu
 scripts/build-native.sh     builds the macOS N-API addon
 test/loader-smoke.js        headless fake-Electron loader test
+install.sh / uninstall.sh   one-command mod/unmod of the installed app
 ```
 
 ## Paths
 
-| Platform | Config / mods / data | Log |
+| Platform | Config / mods | Log |
 | --- | --- | --- |
 | macOS | `~/Library/Application Support/QobuzMods/` | `~/Library/Logs/qobuz-mods.log` |
 | Windows | `%APPDATA%\QobuzMods\` | `%LOCALAPPDATA%\QobuzMods\logs\qobuz-mods.log` |
@@ -151,9 +187,7 @@ QobuzMods/
   patch-state.json     app path, loader path, hashes, app version
   runtime/             installed loader + preload (non-dev installs)
   mods/                installed mods
-  data/
-    last-played/
-      last-played.json
+  data/<mod-id>/       per-mod persistent data
 ```
 
 ## Writing a mod
@@ -202,78 +236,41 @@ Renderer code runs in the preload context with `window.__qobuzModsRenderer`:
 
 ```js
 const { invoke } = window.__qobuzModsRenderer;
-const data = await invoke('mod-invoke', 'last-played', 'list');
+const result = await invoke('mod-invoke', 'my-mod', 'hello');
 ```
 
 First-party mods are marked `"bundled": true` and are refreshed on install. User mods are never
-overwritten unless `--force` is passed.
-
-## Last played
-
-Investigation result: Qobuz exposes `SORT_BY_RECENTLY_PLAYED` only as an unused enum; the
-library sort map has no last-played key, and the local SQLite DB has no play-history table
-(`player-0.json` only stores the current queue history). The current implementation records
-album starts locally:
-
-```json
-{
-  "albumId": "xne8h1xxlpfbc",
-  "albumTitle": "Big Ideas",
-  "artist": "Remi Wolf",
-  "artworkUrl": "file:///.../small_cover.png",
-  "playCount": 1,
-  "lastPlayedAt": 1795106722975,
-  "lastTrackTitle": "Wave"
-}
-```
-
-The menu's **Last played** tab lists albums by most recent play. A library-grid sort can be
-added later; the data model is ready.
-
-A server-side last-played sort may exist (`favorite/getUserFavorites` spreads extra query
-params), but confirming it requires a read-only authenticated API probe with the user's session.
-That has **not** been done. Ask before running it.
+overwritten unless `--force` is passed. Retired first-party mods are removed on install.
 
 ## Signing / Gatekeeper
 
-Modifying `main-darwin.js` invalidates the app signature. The patcher extracts the stock app's
-entitlements and re-signs the copy ad-hoc with hardened runtime:
+Modifying `main-darwin.js` invalidates the app signature. The patcher extracts the app's
+entitlements and re-signs it in place ad-hoc with hardened runtime:
 
 ```sh
-codesign --force --deep --options runtime --entitlements <stock> --sign - "<app>"
+codesign --force --deep --options runtime --entitlements <original> --sign - "/Applications/Qobuz.app"
 ```
 
-If macOS quarantines the copy, run:
+If macOS quarantines the app, run:
 
 ```sh
-xattr -dr com.apple.quarantine "<app>"
+xattr -dr com.apple.quarantine "/Applications/Qobuz.app"
 ```
 
-The patched app's Squirrel auto-updater cannot install updates because the copy is ad-hoc
+The patched app's Squirrel auto-updater cannot install updates because the app is ad-hoc
 signed. Update manually:
 
-1. quit the patched app;
-2. launch/update the stock Qobuz app;
+1. quit Qobuz;
+2. launch the stock Qobuz app and let it update;
 3. quit it;
-4. run `node bin/qobuz-mod.js update`.
+4. run `node bin/qobuz-mod.js update` (or `./install.sh`).
 
-## Restore / uninstall
-
-```sh
-node bin/qobuz-mod.js restore --app "$HOME/Applications/Qobuz Mod.app"
-```
-
-This copies `main-darwin.js.qobuzmod-backup` back, removes `patch-state.json`, and re-signs.
-Config, logs, and mods under `QobuzMods/` are kept. Delete that directory to remove user data.
-
-## macOS Now Playing verification
+## macOS Now Playing
 
 The native addon loads and `setTrack`/`setProgress` are called with the correct metadata
-(`Wave / Remi Wolf / Big Ideas / 229s` from the scratch run). System Now Playing verification
-is pending because another app (a browser playing SomaFM) currently owns `MPNowPlayingInfoCenter`
-on this machine. Once Qobuz is the active player, it should appear in Control Center and in the
-Übersicht widget. Play/pause/next/previous use `MPRemoteCommandCenter`; stock media-key
-`globalShortcut` registrations are suppressed while the native mod is active.
+(`Wave / Remi Wolf / Big Ideas / 229s` from the scratch run). Play/pause/next/previous use
+`MPRemoteCommandCenter`; stock media-key `globalShortcut` registrations are suppressed while
+the native mod is active.
 
 Seek is not exposed by Qobuz's renderer `media-controls` path, so the replacement has parity
 with the old addon (no seek) rather than a regression. It can be added later via
@@ -293,6 +290,6 @@ node test/loader-smoke.js
 ```
 
 The smoke test uses a fake Electron main process, a temporary config dir, and the real loader:
-it checks preload installation, renderer sources, track/progress events, last-played recording,
-deduplication, mod toggling, doctor output, and log writes. It never launches Qobuz or reads the
-real Qobuz profile.
+it checks preload installation, renderer sources, track/progress events, mod listing, mod
+toggling, doctor output, and log writes. It never launches Qobuz or reads the real Qobuz
+profile.

@@ -85,7 +85,8 @@ function header(text) {
 
 function resolveApp(opts) {
   const source = path.resolve(expandHome(opts.source || paths.defaultSourceApp(PLATFORM)));
-  const app = path.resolve(expandHome(opts.app || paths.defaultTargetApp(PLATFORM)));
+  // Default to patching the installed app in place. --app selects a copy.
+  const app = path.resolve(expandHome(opts.app || source));
   return { source, app };
 }
 
@@ -130,6 +131,21 @@ function ensureNotRunning(appPath) {
     fail(
       `app is running: ${appPath}\n` +
         'Quit it first. qobuz-mod never kills or relaunches a running Qobuz.',
+    );
+  }
+}
+
+function ensureWritable(appPath) {
+  if (PLATFORM !== 'darwin') return;
+  const main = paths.resolveMainFile(appPath, PLATFORM);
+  try {
+    fs.accessSync(main, fs.constants.W_OK);
+    fs.accessSync(path.dirname(main), fs.constants.W_OK);
+    fs.accessSync(appPath, fs.constants.W_OK);
+  } catch {
+    fail(
+      `app is not writable: ${appPath}\n` +
+        `Fix with: sudo chown -R "$(whoami)" "${appPath}"`,
     );
   }
 }
@@ -250,17 +266,18 @@ function findLoaderPath(injectionLine) {
   return match ? match[2] : null;
 }
 
-function signEverything({ app, source, opts, addonPath }) {
+function signEverything({ app, source, opts, addonPath, entitlements = null }) {
   if (opts['no-sign'] || PLATFORM !== 'darwin') {
     info('skipping codesign (--no-sign or non-macOS)');
     return { signed: false, verified: null };
   }
 
-  let entitlements = null;
-  try {
-    entitlements = patcher.extractEntitlements(source);
-  } catch {
-    warn('could not extract entitlements from the stock app; signing without them');
+  if (!entitlements) {
+    try {
+      entitlements = patcher.extractEntitlements(source);
+    } catch {
+      warn('could not extract entitlements from the source app; signing without them');
+    }
   }
 
   if (addonPath && fs.existsSync(addonPath)) {
@@ -286,13 +303,7 @@ function signEverything({ app, source, opts, addonPath }) {
 
 function commandPatch(opts) {
   const { source, app } = resolveApp(opts);
-
-  if (app === source) {
-    fail(
-      'refusing to patch the stock Qobuz.app in place. Use --app to target a copy ' +
-        '(the default is ~/Applications/Qobuz Mod.app).',
-    );
-  }
+  const inPlace = app === source;
 
   const sourceInfo = validateQobuzApp(source, 'source app');
   info(
@@ -300,27 +311,49 @@ function commandPatch(opts) {
       `        Qobuz ${sourceInfo.version}, Electron ${sourceInfo.electron || '?'}`,
   );
 
+  if (opts.dev && inPlace) {
+    fail(
+      '--dev patches a scratch copy, not the installed app. Pass ' +
+        '--app ".scratch/Qobuz Dev.app" so the repo loader/mods are used.',
+    );
+  }
+  if (inPlace && opts['bundle-id']) {
+    warn('--bundle-id only applies to copied apps; ignoring it for the in-place patch');
+  }
+
   const targetExisted = fs.existsSync(app);
   if (!targetExisted) {
+    if (inPlace) fail(`app not found: ${app}`);
     copyApp(source, app, opts);
-  } else if (opts.refresh) {
+  } else if (opts.refresh && !inPlace) {
     copyApp(source, app, opts);
   } else {
     validateQobuzApp(app, 'target app');
-    info(`target: ${paint('bold', app)} (existing)`);
+    info(`target: ${paint('bold', app)} ${inPlace ? '(in place)' : '(existing)'}`);
   }
 
   ensureNotRunning(app);
+  ensureWritable(app);
 
-  if (paths.stockAppRunning()) {
+  if (!inPlace && paths.stockAppRunning()) {
     warn(
       'stock /Applications/Qobuz.app is running. The patched app shares its profile ' +
         'and Electron singleton, so quit the stock app before launching the patched app.',
     );
   }
-
   if (opts.dev && app.includes('/Applications/Qobuz Mod.app')) {
     warn('--dev targets a path that looks like the working Qobuz Mod.app; use .scratch instead');
+  }
+
+  // Extract entitlements before touching the app, while the original signature
+  // is still intact.
+  let entitlements = null;
+  if (PLATFORM === 'darwin') {
+    try {
+      entitlements = patcher.extractEntitlements(source);
+    } catch {
+      warn('could not extract entitlements from the source app; signing without them');
+    }
   }
 
   const addonPath = ensureNativeAddon(opts);
@@ -363,7 +396,7 @@ function commandPatch(opts) {
 
   if (result.note) info(`patch: ${result.note}`);
 
-  const signing = signEverything({ app, source, opts, addonPath });
+  const signing = signEverything({ app, source, opts, addonPath, entitlements });
 
   if (opts.json) {
     info(
@@ -373,6 +406,7 @@ function commandPatch(opts) {
           version: VERSION,
           source,
           app,
+          inPlace,
           loaderPath,
           configDir,
           modsDir: runtime.modsDir,
@@ -396,7 +430,7 @@ function commandPatch(opts) {
   info(
     `Mods: ${runtime.modsDir}\n` +
       `Config: ${runtime.configFile}\n` +
-      'Quit the stock Qobuz app before launching the patched app (shared profile).',
+      'Quit Qobuz before launching the patched app.',
   );
 }
 
@@ -404,6 +438,17 @@ function commandRestore(opts) {
   const { source, app } = resolveApp(opts);
   validateQobuzApp(app, 'target app');
   ensureNotRunning(app);
+  ensureWritable(app);
+
+  // Extract entitlements before restoring, while the signature is intact.
+  let entitlements = null;
+  if (PLATFORM === 'darwin') {
+    try {
+      entitlements = patcher.extractEntitlements(source);
+    } catch {
+      warn('could not extract entitlements from the source app; signing without them');
+    }
+  }
 
   const result = patcher.restorePatch({
     appPath: app,
@@ -417,7 +462,7 @@ function commandRestore(opts) {
   }
 
   info(`restored main file from ${result.restoredFrom}`);
-  signEverything({ app, source, opts, addonPath: null });
+  signEverything({ app, source, opts, addonPath: null, entitlements });
 
   if (opts.json) {
     info(JSON.stringify({ ok: true, ...result }, null, 2));
@@ -431,6 +476,7 @@ function commandRestore(opts) {
 
 function commandDoctor(opts) {
   const { source, app } = resolveApp(opts);
+  const inPlace = app === source;
   const configDir = paths.configDir(PLATFORM);
   const configFile = path.join(configDir, 'config.json');
   const config = readJSON(configFile, { version: 1, enabled: {}, options: {} });
@@ -465,9 +511,13 @@ function commandDoctor(opts) {
   const warnings = [];
   if (!targetInfo) warnings.push(`target app does not exist: ${app}`);
   if (paths.stockAppRunning()) {
-    warnings.push('stock /Applications/Qobuz.app is running; quit it before launching the patched app');
+    warnings.push(
+      inPlace
+        ? 'Qobuz is running; quit it before patching or restoring'
+        : 'stock /Applications/Qobuz.app is running; quit it before launching the patched app',
+    );
   }
-  if (targetInfo && paths.isAppRunning(app)) {
+  if (!inPlace && targetInfo && paths.isAppRunning(app)) {
     warnings.push('the patched app is currently running');
   }
   if (inspection && !inspection.injected) warnings.push('target main file is not injected');
@@ -487,6 +537,7 @@ function commandDoctor(opts) {
     tool: { version: VERSION, platform: PLATFORM, node: process.version },
     source,
     app,
+    inPlace,
     sourceInfo,
     targetInfo,
     inspection,
@@ -517,19 +568,31 @@ function commandDoctor(opts) {
   info(`platform: ${PLATFORM}   node: ${process.version}`);
 
   header('Apps');
-  if (sourceInfo) {
-    check(true, 'stock app', `${source}  Qobuz ${sourceInfo.version}  Electron ${sourceInfo.electron || '?'}`);
+  if (inPlace) {
+    if (targetInfo) {
+      check(
+        true,
+        'app (in place)',
+        `${app}  Qobuz ${targetInfo.version}  Electron ${targetInfo.electron || '?'}  bundle=${targetInfo.bundleId || '?'}`,
+      );
+    } else {
+      check(false, 'app', `${app} (missing)`);
+    }
   } else {
-    check(false, 'stock app', source);
-  }
-  if (targetInfo) {
-    check(
-      true,
-      'target app',
-      `${app}  Qobuz ${targetInfo.version}  bundle=${targetInfo.bundleId || '?'}`,
-    );
-  } else {
-    check(false, 'target app', `${app} (missing)`);
+    if (sourceInfo) {
+      check(true, 'stock app', `${source}  Qobuz ${sourceInfo.version}  Electron ${sourceInfo.electron || '?'}`);
+    } else {
+      check(false, 'stock app', source);
+    }
+    if (targetInfo) {
+      check(
+        true,
+        'target app',
+        `${app}  Qobuz ${targetInfo.version}  bundle=${targetInfo.bundleId || '?'}`,
+      );
+    } else {
+      check(false, 'target app', `${app} (missing)`);
+    }
   }
 
   header('Patch');
@@ -595,8 +658,12 @@ function commandDoctor(opts) {
   info(`  ${paint('dim', JSON.stringify(config.enabled || {}))}`);
 
   header('Processes');
-  check(!report.running.stock, 'stock app running', report.running.stock ? 'yes' : 'no');
-  check(!report.running.target, 'target app running', report.running.target ? 'yes' : 'no');
+  if (inPlace) {
+    check(!report.running.target, 'app running', report.running.target ? 'yes' : 'no');
+  } else {
+    check(!report.running.stock, 'stock app running', report.running.stock ? 'yes' : 'no');
+    check(!report.running.target, 'target app running', report.running.target ? 'yes' : 'no');
+  }
 
   header('Log');
   info(`  ${paths.logFile(PLATFORM)}`);
@@ -642,8 +709,14 @@ function commandList(opts) {
 }
 
 function commandUpdate(opts) {
-  info('refreshing target from the stock app and re-applying...');
-  commandPatch({ ...opts, refresh: true, force: true, 'build-native': true });
+  const { source, app } = resolveApp(opts);
+  const inPlace = app === source;
+  info(
+    inPlace
+      ? 're-applying the in-place patch (backup/version detection will run)...'
+      : 'refreshing target from the stock app and re-applying...',
+  );
+  commandPatch({ ...opts, refresh: !inPlace, force: true, 'build-native': true });
 }
 
 function commandBuildNative() {
@@ -671,8 +744,8 @@ Commands:
   help        Show this help.
 
 Options:
-  -a, --app <path>       Target app (default: ~/Applications/Qobuz Mod.app)
-  -s, --source <path>    Stock app (default: /Applications/Qobuz.app)
+  -a, --app <path>       App to patch (default: /Applications/Qobuz.app, in place)
+  -s, --source <path>    Source app when --app creates a copy (default: /Applications/Qobuz.app)
       --dev              Use the repo's runtime/ and mods/ directly (no copy)
       --refresh          Re-copy the target from the source before patching
       --force            Overwrite bundled mods / allow edge-case patches
@@ -684,14 +757,17 @@ Options:
   -h, --help             Show help
 
 Examples:
-  # Development against a scratch copy (never touches /Applications/Qobuz Mod.app)
+  # Development against a scratch copy (does not touch the installed app)
   node bin/qobuz-mod.js patch --dev --app ".scratch/Qobuz Dev.app"
 
   # Inspect the scratch install
   node bin/qobuz-mod.js doctor --app ".scratch/Qobuz Dev.app"
 
-  # User install
-  node bin/qobuz-mod.js patch
+  # User install: mod the installed Qobuz.app in place
+  ./install.sh
+
+  # Unmod: restore the original main file and re-sign
+  ./uninstall.sh
 
   # After a Qobuz update
   node bin/qobuz-mod.js update
