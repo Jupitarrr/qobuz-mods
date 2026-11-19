@@ -1,0 +1,20 @@
+{
+  "name": "qobuz-mods",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Spicetify-style modding framework for Qobuz Desktop",
+  "license": "MIT",
+  "bin": {
+    "qobuz-mod": "bin/qobuz-mod.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build:native": "bash scripts/build-native.sh",
+    "patch:dev": "node bin/qobuz-mod.js patch --dev --app \".scratch/Qobuz Dev.app\"",
+    "doctor:dev": "node bin/qobuz-mod.js doctor --app \".scratch/Qobuz Dev.app\"",
+    "list": "node bin/qobuz-mod.js list",
+    "test:smoke": "node test/loader-smoke.js"
+  }
+}

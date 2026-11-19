@@ -1,0 +1,9 @@
+node_modules/
+.scratch/
+build/
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+mods/now-playing/qobuz-nowplaying.node
+mods/now-playing/native/build/
