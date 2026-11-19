@@ -18,6 +18,7 @@
     "patch:dev": "node bin/qobuz-mod.js patch --dev --app \".scratch/Qobuz Dev.app\"",
     "doctor:dev": "node bin/qobuz-mod.js doctor --app \".scratch/Qobuz Dev.app\"",
     "list": "node bin/qobuz-mod.js list",
-    "test:smoke": "node test/loader-smoke.js"
+    "test:smoke": "node test/loader-smoke.js",
+    "test:installer": "bash test/installer-smoke.sh"
   }
 }

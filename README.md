@@ -43,7 +43,42 @@ Because the feature cannot be sourced from the account, the Last Played mod was 
 than maintaining a separate local log. It can return if Qobuz exposes an account-level history
 endpoint.
 
-## Quick start (install / patch in place)
+## Quick start (one-line install)
+
+Requires macOS, Node 18+, and Xcode Command Line Tools (for the Now Playing addon). Quit
+Qobuz, then paste:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jupitarrr/qobuz-mods/main/install.sh | bash
+open "/Applications/Qobuz.app"
+```
+
+That command downloads the latest source to `~/.qobuz-mods/`, builds the native Now Playing
+addon, installs `runtime/` and first-party mods into
+`~/Library/Application Support/QobuzMods/`, and patches `/Applications/Qobuz.app` in place.
+
+Pass CLI flags after `--`, for example:
+
+```sh
+# Skip the native addon if you do not have Xcode Command Line Tools
+curl -fsSL https://raw.githubusercontent.com/Jupitarrr/qobuz-mods/main/install.sh | bash -s -- --no-native
+
+# Overwrite bundled/user mods and allow edge-case patches
+curl -fsSL https://raw.githubusercontent.com/Jupitarrr/qobuz-mods/main/install.sh | bash -s -- --force
+
+# Patch a copy instead of the installed app
+curl -fsSL https://raw.githubusercontent.com/Jupitarrr/qobuz-mods/main/install.sh | bash -s -- --app "$HOME/Applications/Qobuz Mod.app"
+```
+
+To update or re-patch after a Qobuz update, rerun the same one-liner. It refreshes
+`~/.qobuz-mods/` from `main` and re-applies the patch. Pin a tag or commit with
+`QOBUZ_MODS_REF=v0.1.0`, and override the source directory with `QOBUZ_MODS_HOME`.
+
+The patched app keeps its original Developer ID signature. Only a resource inside the bundle
+changes; macOS does not re-check the bundle seal when launching a non-quarantined app, so no
+re-signing is needed. See [Signing / Gatekeeper](#signing--gatekeeper).
+
+### From a checkout
 
 ```sh
 cd ~/off-work/qobuz-mods
@@ -51,25 +86,23 @@ cd ~/off-work/qobuz-mods
 open "/Applications/Qobuz.app"
 ```
 
-Quit Qobuz first. The installer:
+Use a checkout when developing mods (see [Development](#development-scratch-copy)).
 
-1. builds the native Now Playing addon if needed;
-2. installs `runtime/` and first-party mods into
-   `~/Library/Application Support/QobuzMods/`;
-3. backs up `main-darwin.js` and injects the loader into `/Applications/Qobuz.app`.
+### Uninstall / restore
 
-The patched app keeps its original Developer ID signature. Only a resource inside the bundle
-changes; macOS does not re-check the bundle seal when launching a non-quarantined app, so no
-re-signing is needed. See [Signing / Gatekeeper](#signing--gatekeeper).
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jupitarrr/qobuz-mods/main/uninstall.sh | bash
+```
 
-To undo:
+Or, if you installed from a checkout:
 
 ```sh
 ./uninstall.sh
 ```
 
 This restores `main-darwin.js` from the backup (and removes the backup file). Config, logs,
-and mods under `QobuzMods/` are kept; delete that directory to remove user data.
+and mods under `QobuzMods/` are kept, as is the `~/.qobuz-mods/` source install; delete those
+directories to remove user data and the downloaded source.
 
 If `/Applications/Qobuz.app` is not writable by your user, the CLI tells you the exact
 `sudo chown` command. It never runs sudo for you.
@@ -177,15 +210,18 @@ mods/now-playing/           macOS MPNowPlayingInfoCenter addon + main mod
 mods/mods-menu/             core user-menu item + mods panel
 scripts/build-native.sh     builds the macOS N-API addon
 test/loader-smoke.js        headless fake-Electron loader test
-install.sh / uninstall.sh   one-command mod/unmod of the installed app
+install.sh / uninstall.sh   local or curl-based bootstrap, patch/unpatch
 ```
 
 ## Paths
 
-| Platform | Config / mods | Log |
-| --- | --- | --- |
-| macOS | `~/Library/Application Support/QobuzMods/` | `~/Library/Logs/qobuz-mods.log` |
-| Windows | `%APPDATA%\QobuzMods\` | `%LOCALAPPDATA%\QobuzMods\logs\qobuz-mods.log` |
+| What | Where |
+| --- | --- |
+| Config / mods (macOS) | `~/Library/Application Support/QobuzMods/` |
+| Config / mods (Windows) | `%APPDATA%\QobuzMods\` |
+| Log (macOS) | `~/Library/Logs/qobuz-mods.log` |
+| Log (Windows) | `%LOCALAPPDATA%\QobuzMods\logs\qobuz-mods.log` |
+| Downloaded source (curl installs) | `~/.qobuz-mods/` |
 
 ```
 QobuzMods/
@@ -292,10 +328,11 @@ With `--sign` the app's requirement is a cdhash, and Squirrel will reject genuin
 Auto-update is not guaranteed in either mode. The supported flow is:
 
 1. quit Qobuz;
-2. run `./uninstall.sh` to restore the original main JS;
+2. run the uninstall one-liner (or `./uninstall.sh` from a checkout) to restore the original
+   main JS;
 3. launch Qobuz and let it update (or reinstall Qobuz from the DMG);
 4. quit Qobuz;
-5. run `./install.sh` again.
+5. rerun the install one-liner (or `./install.sh`).
 
 `node bin/qobuz-mod.js update` re-applies the patch and rebuilds the native addon; the
 patcher detects a changed stock main file and refreshes its backup.
@@ -321,10 +358,15 @@ against Qobuz 8.3.0 / Electron 32.3.3.
 ## Tests
 
 ```sh
-node test/loader-smoke.js
+npm run test:smoke
+npm run test:installer
 ```
 
-The smoke test uses a fake Electron main process, a temporary config dir, and the real loader:
-it checks preload installation, renderer sources, track/progress events, mod listing, mod
-toggling, doctor output, and log writes. It never launches Qobuz or reads the real Qobuz
+The loader smoke test uses a fake Electron main process, a temporary config dir, and the real
+loader: it checks preload installation, renderer sources, track/progress events, mod listing,
+mod toggling, doctor output, and log writes. It never launches Qobuz or reads the real Qobuz
 profile.
+
+The installer smoke test builds a local source tarball, runs `install.sh` through stdin (the
+same path as `curl ... | bash`), and verifies it extracts to a temporary `QOBUZ_MODS_HOME`
+and runs the CLI. It does not patch Qobuz.
