@@ -255,8 +255,26 @@ function seconds(value) {
   return n > 10000 ? n / 1000 : n;
 }
 
+function existingFile(candidate) {
+  try {
+    const file = candidate.startsWith('file://') ? fileURLToPath(candidate) : candidate;
+    if (path.isAbsolute(file) && fs.existsSync(file)) return file;
+  } catch {
+    // Not a usable path.
+  }
+  return '';
+}
+
+function qobuzUserData() {
+  try {
+    return app.getPath('userData');
+  } catch {
+    return '';
+  }
+}
+
 function artworkFor(album, albumId) {
-  const out = { path: '', url: '' };
+  const out = { path: '', url: '', expectedPath: '' };
   const image = album && album.image && typeof album.image === 'object' ? album.image : {};
   const assets = album && album.assetsAPI && typeof album.assetsAPI === 'object' ? album.assetsAPI : {};
 
@@ -266,17 +284,18 @@ function artworkFor(album, albumId) {
     out.url = image.small;
   }
 
-  let userData = '';
-  try {
-    userData = app.getPath('userData');
-  } catch {
-    userData = '';
+  const userData = qobuzUserData();
+  if (albumId && userData) {
+    // Qobuz writes downloaded album covers here (see getCoverSmallImage() in
+    // its own bundle). The file may not exist yet when a track starts, because
+    // Qobuz kicks off the download asynchronously right after we see the load.
+    out.expectedPath = path.join(userData, 'tmp', 'Assets', albumId, 'small_cover.png');
   }
 
   const candidates = [];
-  if (albumId && userData) {
+  if (out.expectedPath) {
     candidates.push(
-      path.join(userData, 'tmp', 'Assets', albumId, 'small_cover.png'),
+      out.expectedPath,
       path.join(userData, 'tmp', 'Assets', albumId, 'large_cover.png'),
     );
   }
@@ -286,17 +305,71 @@ function artworkFor(album, albumId) {
   }
 
   for (const candidate of candidates) {
-    try {
-      const file = candidate.startsWith('file://') ? fileURLToPath(candidate) : candidate;
-      if (path.isAbsolute(file) && fs.existsSync(file)) {
-        out.path = file;
-        return out;
-      }
-    } catch {
-      // Try the next candidate.
+    const file = existingFile(candidate);
+    if (file) {
+      out.path = file;
+      break;
     }
   }
   return out;
+}
+
+// Album covers are downloaded by Qobuz asynchronously after player-load-music /
+// player-switch-channel. Watch the expected file for a short while so the
+// native now-playing item can be updated once the artwork actually exists.
+let artworkWatch = null;
+
+function cancelArtworkWatch() {
+  if (!artworkWatch) return;
+  clearTimeout(artworkWatch.timer);
+  artworkWatch = null;
+}
+
+function isCurrentTrack(meta) {
+  const track = playerState.currentTrack;
+  if (!track || !meta) return false;
+  return (
+    track.id === meta.id &&
+    track.albumId === meta.albumId &&
+    track.title === meta.title
+  );
+}
+
+function watchArtwork(meta) {
+  cancelArtworkWatch();
+  if (!meta || meta.artworkPath || !meta.artworkExpectedPath) return;
+
+  const watch = { timer: null, expectedPath: meta.artworkExpectedPath };
+  const deadline = Date.now() + 8000;
+  artworkWatch = watch;
+
+  const check = () => {
+    if (artworkWatch !== watch) return;
+    if (!isCurrentTrack(meta)) {
+      artworkWatch = null;
+      return;
+    }
+
+    const file = existingFile(watch.expectedPath);
+    if (file) {
+      const track = playerState.currentTrack;
+      track.artworkPath = file;
+      artworkWatch = null;
+      log('debug', 'album artwork ready', file);
+      emit('artwork', { track, artworkPath: file });
+      return;
+    }
+
+    if (Date.now() >= deadline) {
+      artworkWatch = null;
+      log('debug', 'album artwork still missing', watch.expectedPath);
+      return;
+    }
+
+    watch.timer = setTimeout(check, 200);
+  };
+
+  watch.timer = setTimeout(check, 100);
 }
 
 function describeTrack(raw) {
@@ -329,25 +402,46 @@ function describeTrack(raw) {
     duration: seconds(raw.duration),
     artworkPath: artwork.path,
     artworkUrl: artwork.url,
+    artworkExpectedPath: artwork.expectedPath,
     parentalWarning: Boolean(raw.parental_warning || album.parental_warning),
   };
 }
 
-let lastTrackKey = '';
+// Tracks load through one of three paths:
+//   player-load-music         normal play / manual skip
+//   player-switch-channel     gapless advance to an already prepared track
+//   external-player-state-update  cast/external player
+// Only the first one carries the track metadata in its IPC payload, so the
+// prepared next track is cached when Qobuz announces it.
+let preparedNextTrack = null;
+let lastTrackDedupe = '';
+let lastTrackSignature = '';
 let lastTrackAt = 0;
 
-function setTrackFromRaw(raw, source) {
+function setTrackFromRaw(raw, source, options = {}) {
   const meta = describeTrack(raw);
   if (!meta) return null;
-  const key = `${meta.id}|${meta.albumId}|${meta.title}`;
+
   const now = Date.now();
-  // Both player-load-music and player-music-loaded may carry the same track.
-  if (key === lastTrackKey && now - lastTrackAt < 2500) return null;
-  lastTrackKey = key;
+  const signature = `${meta.id}|${meta.albumId}|${meta.title}`;
+  const dedupe = options.dedupeKey ? String(options.dedupeKey) : '';
+
+  if (dedupe) {
+    if (dedupe === lastTrackDedupe) return null;
+  } else if (options.dedupeSame) {
+    if (signature === lastTrackSignature) return null;
+  } else if (signature === lastTrackSignature && now - lastTrackAt < 2500) {
+    // Guard against duplicate notifications for the same track.
+    return null;
+  }
+
+  cancelArtworkWatch();
+  lastTrackDedupe = dedupe;
+  lastTrackSignature = signature;
   lastTrackAt = now;
   playerState.currentTrack = meta;
-  playerState.playing = false;
-  playerState.position = 0;
+  playerState.playing = options.playing === true;
+  playerState.position = Math.max(0, num(options.position, 0));
 
   if (config.options && config.options.__debugTrack === true) {
     log('debug', 'track object keys', Object.keys(raw));
@@ -356,7 +450,13 @@ function setTrackFromRaw(raw, source) {
     log('debug', 'first track object keys', Object.keys(raw));
   }
 
-  return emit('track', { track: meta, playing: false, source });
+  const event = emit('track', {
+    track: meta,
+    playing: playerState.playing,
+    source,
+  });
+  watchArtwork(meta);
+  return event;
 }
 
 function observeOutgoing(channel, args) {
@@ -618,9 +718,71 @@ function installPlayerIpc() {
   // The metadata object is the one Qobuz's own notifyOperatingSystem consumes.
   ipcMain.on('player-load-music', (event, loadId, trackMetadata) => {
     try {
-      setTrackFromRaw(trackMetadata, 'player-load-music');
+      preparedNextTrack = null;
+      // A unique load id lets the same track be replayed without being
+      // mistaken for a duplicate notification.
+      setTrackFromRaw(trackMetadata, 'player-load-music', {
+        dedupeKey: loadId != null ? `load:${loadId}` : '',
+      });
     } catch (error) {
       log('error', 'player-load-music handling failed', error);
+    }
+  });
+
+  // Qobuz preloads the next queue item on the "next" player:
+  //   player-prepare-next-track(requestId, trackMetadata, fileUrlData)
+  // Gapless playback later switches to it without sending player-load-music.
+  ipcMain.on('player-prepare-next-track', (event, requestId, trackMetadata, fileUrlData) => {
+    try {
+      preparedNextTrack =
+        trackMetadata && fileUrlData
+          ? { requestId: requestId != null ? String(requestId) : '', track: trackMetadata }
+          : null;
+    } catch (error) {
+      log('error', 'player-prepare-next-track handling failed', error);
+    }
+  });
+
+  ipcMain.on('player-switch-channel', (event, requestId) => {
+    try {
+      const prepared = preparedNextTrack;
+      preparedNextTrack = null;
+      if (!prepared || !prepared.track) {
+        log('warn', 'gapless switch without a prepared track; now playing may stay stale');
+        return;
+      }
+      setTrackFromRaw(prepared.track, 'player-switch-channel', {
+        dedupeKey: prepared.requestId ? `switch:${prepared.requestId}` : '',
+        playing: true,
+      });
+      playerState.playing = true;
+    } catch (error) {
+      log('error', 'player-switch-channel handling failed', error);
+    }
+  });
+
+  // Cast / external player updates carry the full mapped track.
+  ipcMain.on('external-player-state-update', (event, payload) => {
+    try {
+      const info = payload && typeof payload === 'object' ? payload : {};
+      const playingState = String(info.playingState || '');
+      if (info.currentTrack) {
+        const playing = playingState === 'play';
+        const emitted = setTrackFromRaw(info.currentTrack, 'external-player-state-update', {
+          dedupeSame: true,
+          playing,
+        });
+        if (!emitted) {
+          // The track did not change; still forward play/pause/stop changes.
+          playerState.playing = playing;
+          emit('state', {
+            state: playingState === 'stopped' ? 'stopped' : playing ? 'playing' : 'paused',
+            playing,
+          });
+        }
+      }
+    } catch (error) {
+      log('error', 'external-player-state-update handling failed', error);
     }
   });
 
@@ -640,11 +802,14 @@ function installPlayerIpc() {
   });
 
   const clear = (source) => {
+    cancelArtworkWatch();
     playerState.currentTrack = null;
     playerState.playing = false;
     playerState.position = 0;
     playerState.status = 'Stopped';
-    lastTrackKey = '';
+    preparedNextTrack = null;
+    lastTrackDedupe = '';
+    lastTrackSignature = '';
     emit('clear', { source });
   };
 
@@ -1204,6 +1369,7 @@ function init() {
   app.on('before-quit', () => {
     try {
       saveConfig();
+      cancelArtworkWatch();
       for (const mod of state.mods.values()) {
         if (!mod.active || !mod.exported) continue;
         const deactivate =

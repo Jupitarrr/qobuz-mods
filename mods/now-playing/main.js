@@ -115,6 +115,7 @@ function applyTrack(event, ctx) {
     album: current.album,
     duration: current.duration,
     state,
+    source: event.source,
   });
 }
 
@@ -130,6 +131,23 @@ function applyProgress(event, ctx) {
     rate: playing ? 1.0 : 0.0,
     state,
   });
+}
+
+function applyArtwork(event, ctx) {
+  if (!native || !current || !event.artworkPath) return;
+  current.artworkPath = event.artworkPath;
+  const playing = Boolean(ctx.player.playing);
+  native.setTrack({
+    title: current.title,
+    artist: current.artist,
+    album: current.album,
+    duration: current.duration,
+    elapsed: Number(ctx.player.position) || 0,
+    rate: playing ? 1.0 : 0.0,
+    state: playing ? 'playing' : 'paused',
+    artworkPath: current.artworkPath,
+  });
+  ctx.log.debug('now playing artwork', event.artworkPath);
 }
 
 function applyState(event, ctx) {
@@ -169,6 +187,9 @@ module.exports.activate = function activate(ctx) {
           break;
         case 'progress':
           applyProgress(event, ctx);
+          break;
+        case 'artwork':
+          applyArtwork(event, ctx);
           break;
         case 'state':
           applyState(event, ctx);

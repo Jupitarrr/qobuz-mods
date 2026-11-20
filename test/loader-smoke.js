@@ -184,6 +184,31 @@ function assert(condition, message) {
   if (!condition) throw new Error(`assertion failed: ${message}`);
 }
 
+function waitFor(predicate, message, timeoutMs = 3000) {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      let value;
+      try {
+        value = predicate();
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      if (value) {
+        resolve(value);
+        return;
+      }
+      if (Date.now() - started > timeoutMs) {
+        reject(new Error(`timed out: ${message}`));
+        return;
+      }
+      setTimeout(tick, 50);
+    };
+    tick();
+  });
+}
+
 async function main() {
   const loaderPath = path.resolve(__dirname, process.env.QOBUZ_MODS_TEST_LOADER || '../runtime/loader');
   const loader = require(loaderPath);
@@ -205,6 +230,11 @@ async function main() {
   const win = new FakeWindow();
   fakeApp.emit('browser-window-created', {}, win);
 
+  const trackEvents = [];
+  const artworkEvents = [];
+  loader.player.on('track', (event) => trackEvents.push(event));
+  loader.player.on('artwork', (event) => artworkEvents.push(event));
+
   // Shape produced by the renderer's mapTrack() before it is sent to
   // player-load-music: performer.name, album.title, album.image.
   const track = {
@@ -223,6 +253,27 @@ async function main() {
   fakeIpcMain.emit('player-load-music', {}, 'load-1', track, fileData, 0);
   fakeIpcMain.emit('player-play-music', {});
 
+  const expectedCover = path.join(userData, 'tmp', 'Assets', track.album.id, 'small_cover.png');
+  const afterLoad = await fakeIpcMain.invoke('qobuzmods:doctor');
+  assert(afterLoad.player.hasTrack, 'doctor sees loaded track');
+  assert(
+    afterLoad.player.track.artworkExpectedPath === expectedCover,
+    'loader knows where Qobuz will download the cover',
+  );
+  assert(afterLoad.player.track.artworkPath === '', 'cover is not reported before it exists');
+
+  // Qobuz downloads album covers asynchronously after the track is loaded.
+  fs.mkdirSync(path.dirname(expectedCover), { recursive: true });
+  fs.writeFileSync(expectedCover, Buffer.from('fake png'));
+  await waitFor(() => {
+    const doctorNow = loader.doctor();
+    return doctorNow.player.track && doctorNow.player.track.artworkPath === expectedCover;
+  }, 'artwork event/state updated after cover appears');
+  assert(
+    artworkEvents.some((event) => event.artworkPath === expectedCover),
+    'an artwork event is emitted when the cover appears',
+  );
+
   // This is how Qobuz publishes progress: main -> renderer via webContents.send.
   win.webContents.send('player-refresh-music-info', {
     timestamp: Date.now(),
@@ -230,6 +281,37 @@ async function main() {
     status: 'Playing',
     endOfFile: false,
   });
+
+  // Gapless playback: Qobuz prepares the next track, then switches to it
+  // without sending player-load-music.
+  const nextTrack = {
+    id: 67890,
+    title: 'Photo ID',
+    duration: 254,
+    performer: { id: 2, name: 'Remi Wolf' },
+    album: {
+      id: 'album-two',
+      title: 'Big Ideas',
+      image: { small: 'https://static.qobuz.com/example-2.jpg' },
+    },
+  };
+  fakeIpcMain.emit(
+    'player-prepare-next-track',
+    {},
+    'prepare-1',
+    nextTrack,
+    { track_id: 67890, format_id: 27 },
+  );
+  fakeIpcMain.emit('player-switch-channel', {}, 'switch-1', 1);
+
+  const afterSwitch = await fakeIpcMain.invoke('qobuzmods:doctor');
+  assert(afterSwitch.player.track && afterSwitch.player.track.id === '67890', 'gapless switch updates track');
+  assert(afterSwitch.player.track.title === 'Photo ID', 'gapless switch updates title');
+  assert(afterSwitch.player.playing === true, 'gapless switch marks playback as playing');
+  assert(
+    trackEvents.some((event) => event.source === 'player-switch-channel' && event.track.id === '67890'),
+    'gapless switch emits a track event',
+  );
 
   const toggled = await fakeIpcMain.invoke('qobuzmods:set-enabled', 'now-playing', true);
   assert(toggled.restartRequired === true, 'toggling sets restartRequired');
@@ -241,6 +323,7 @@ async function main() {
   const doctor = await fakeIpcMain.invoke('qobuzmods:doctor');
   assert(doctor.player.hasTrack, 'doctor sees current track');
   assert(doctor.player.playing, 'doctor sees playing state');
+  assert(doctor.player.track.id === '67890', 'doctor sees the gapless-switched track');
   assert(doctor.mods.length >= 2, 'doctor lists mods');
 
   const mods = await fakeIpcMain.invoke('qobuzmods:list');
